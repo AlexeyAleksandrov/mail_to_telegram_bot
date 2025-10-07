@@ -83,6 +83,16 @@ def get_email_body(msg):
     return clean_text(body)
 
 
+def escape_markdown(text):
+    """Экранирует специальные символы Markdown для Telegram."""
+    if not text:
+        return ""
+    escape_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+    for char in escape_chars:
+        text = text.replace(char, '\\' + char)
+    return text
+
+
 def check_new_emails_and_notify():
     """Основная функция: проверяет почту и отправляет уведомления."""
     try:
@@ -123,14 +133,21 @@ def check_new_emails_and_notify():
 
                 body = get_email_body(msg)
 
+                # Экранируем специальные символы Markdown
+                subject_escaped = escape_markdown(subject)
+                from_escaped = escape_markdown(from_)
+                to_escaped = escape_markdown(to_)
+                date_escaped = escape_markdown(date_)
+                body_escaped = escape_markdown(body)
+
                 # Формируем сообщение для Telegram
                 telegram_message = (
                     f"📨 *Новое письмо*\n\n"
-                    f"*От:* {from_}\n"
-                    f"*Кому:* {to_}\n"
-                    f"*Дата:* {date_}\n"
-                    f"*Тема:* {subject}\n\n"
-                    f"*Содержимое:*\n{body[:1000]}"  # Ограничиваем длину сообщения
+                    f"*От:* {from_escaped}\n"
+                    f"*Кому:* {to_escaped}\n"
+                    f"*Дата:* {date_escaped}\n"
+                    f"*Тема:* {subject_escaped}\n\n"
+                    f"*Содержимое:*\n{body_escaped[:1000]}"  # Ограничиваем длину сообщения
                 )
 
                 # Отправляем сообщение в Telegram
@@ -139,6 +156,20 @@ def check_new_emails_and_notify():
 
             except Exception as e:
                 logger.error(f"Ошибка при обработке письма {e_id}: {str(e)}")
+                # Попробуем отправить без форматирования Markdown
+                try:
+                    simple_message = (
+                        f"📨 Новое письмо\n\n"
+                        f"От: {from_}\n"
+                        f"Кому: {to_}\n"
+                        f"Дата: {date_}\n"
+                        f"Тема: {subject}\n\n"
+                        f"Содержимое:\n{body[:1000]}"
+                    )
+                    bot.send_message(CHAT_ID, simple_message, parse_mode=None)
+                    logger.info(f"Письмо {e_id} отправлено без форматирования Markdown")
+                except Exception as e2:
+                    logger.error(f"Не удалось отправить письмо {e_id} даже без форматирования: {str(e2)}")
 
         mail.close()
         mail.logout()
