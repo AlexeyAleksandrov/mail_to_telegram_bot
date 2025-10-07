@@ -1,7 +1,6 @@
 #!/bin/bash
 cd ~/home/mail_to_telegram_bot
-docker-compose down
+docker compose down
 git pull origin master  # если используете git
-docker-compose build --no-cache
-docker-compose up -d
+docker compose up -d --build
 echo "Bot updated successfully"
