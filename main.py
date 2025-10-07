@@ -100,17 +100,22 @@ def check_new_emails_and_notify():
         email_ids = messages[0].split()
         bot = telebot.TeleBot(BOT_TOKEN)
 
+        logger.info(f"Найдено непрочитанных писем: {len(email_ids)}")
+
         # Обрабатываем каждое новое письмо
         for e_id in email_ids:
             try:
-                status, msg_data = mail.fetch(e_id, "(RFC822)")
+                # Используем BODY.PEEK вместо FETCH чтобы не помечать письма как прочитанные
+                status, msg_data = mail.fetch(e_id, "(BODY.PEEK[])")
                 if status != "OK":
+                    logger.error(f"Ошибка при получении письма {e_id}")
                     continue
 
                 msg = email.message_from_bytes(msg_data[0][1])
                 subject = decode_mime_words(msg["Subject"])
                 from_ = decode_mime_words(msg["From"])
                 to_ = decode_mime_words(msg["To"])
+                date_ = msg["Date"]
 
                 # Если темы нет, устанавливаем значение по умолчанию
                 if not subject:
@@ -123,12 +128,14 @@ def check_new_emails_and_notify():
                     f"📨 *Новое письмо*\n\n"
                     f"*От:* {from_}\n"
                     f"*Кому:* {to_}\n"
+                    f"*Дата:* {date_}\n"
                     f"*Тема:* {subject}\n\n"
                     f"*Содержимое:*\n{body[:1000]}"  # Ограничиваем длину сообщения
                 )
+
                 # Отправляем сообщение в Telegram
                 bot.send_message(CHAT_ID, telegram_message, parse_mode="Markdown")
-                logger.info(f"Уведомление отправлено для письма ID: {e_id.decode()}")
+                logger.info(f"Уведомление отправлено для письма ID: {e_id.decode()} от {from_}")
 
             except Exception as e:
                 logger.error(f"Ошибка при обработке письма {e_id}: {str(e)}")
