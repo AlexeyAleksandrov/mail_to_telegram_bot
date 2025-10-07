@@ -23,10 +23,7 @@ CHECK_INTERVAL = int(os.getenv('CHECK_INTERVAL', '300'))
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler('logs/bot.log', encoding='utf-8')
-    ]
+    handlers=[logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
 
