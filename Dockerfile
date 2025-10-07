@@ -7,6 +7,9 @@ RUN apt-get update && apt-get install -y \
     gcc \
     && rm -rf /var/lib/apt/lists/*
 
+# Создаем папку для данных
+RUN mkdir /app/data && chmod 777 /app/data
+
 # Копируем зависимости
 COPY requirements.txt .
 

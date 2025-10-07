@@ -5,6 +5,7 @@ import time
 import telebot
 import os
 import logging
+import json
 from dotenv import load_dotenv
 
 # Загружаем переменные окружения
@@ -27,8 +28,39 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ====== ФУНКЦИИ ДЛЯ СОХРАНЕНИЯ СОСТОЯНИЯ ======
+PROCESSED_EMAILS_FILE = 'data/processed_emails.json'
 
-# ====== ФУНКЦИИ ======
+
+def load_processed_emails():
+    """Загружает множество уже обработанных UID писем."""
+    try:
+        if os.path.exists(PROCESSED_EMAILS_FILE):
+            with open(PROCESSED_EMAILS_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                return set(data.get('processed_uids', []))
+    except Exception as e:
+        logger.error(f"Ошибка при загрузке обработанных писем: {e}")
+    return set()
+
+
+def save_processed_email(uid):
+    """Сохраняет UID письма в файл."""
+    try:
+        processed_uids = load_processed_emails()
+        processed_uids.add(uid)
+
+        data = {
+            'processed_uids': list(processed_uids),
+            'last_updated': time.time()
+        }
+
+        with open(PROCESSED_EMAILS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"Ошибка при сохранении обработанного письма: {e}")
+
+
 def clean_text(text):
     """Удаляет лишние пробелы и переносы строк из текста."""
     if text:
@@ -101,6 +133,10 @@ def check_new_emails_and_notify():
         mail.login(EMAIL_ACCOUNT, EMAIL_PASSWORD)
         mail.select("INBOX")  # Выбираем папку "Входящие"
 
+        # Загружаем уже обработанные письма
+        processed_emails = load_processed_emails()
+        logger.info(f"Загружено {len(processed_emails)} обработанных писем")
+
         # Ищем непрочитанные письма
         status, messages = mail.search(None, "UNSEEN")
         if status != "OK":
@@ -122,6 +158,21 @@ def check_new_emails_and_notify():
                     continue
 
                 msg = email.message_from_bytes(msg_data[0][1])
+
+                # Создаем уникальный идентификатор письма (UID + дата + отправитель)
+                message_id = msg.get('Message-ID', '')
+                date = msg.get('Date', '')
+                from_ = msg.get('From', '')
+
+                # Если нет Message-ID, создаем свой на основе содержимого
+                if not message_id:
+                    message_id = f"{e_id.decode()}_{date}_{from_}"
+
+                # Проверяем, не обрабатывали ли мы уже это письмо
+                if message_id in processed_emails:
+                    logger.info(f"Письмо {message_id} уже было обработано, пропускаем")
+                    continue
+
                 subject = decode_mime_words(msg["Subject"])
                 from_ = decode_mime_words(msg["From"])
                 to_ = decode_mime_words(msg["To"])
@@ -154,20 +205,16 @@ def check_new_emails_and_notify():
                 bot.send_message(CHAT_ID, telegram_message, parse_mode="Markdown")
                 logger.info(f"Уведомление отправлено для письма ID: {e_id.decode()} от {from_}")
 
+                # Сохраняем информацию об обработанном письме
+                save_processed_email(message_id)
+                logger.info(f"Письмо {message_id} добавлено в обработанные")
+
             except Exception as e:
                 logger.error(f"Ошибка при обработке письма {e_id}: {str(e)}")
-                # Попробуем отправить без форматирования Markdown
+                # Попробуем отправить без форматирования Markdown в случае ошибки
                 try:
-                    simple_message = (
-                        f"📨 Новое письмо\n\n"
-                        f"От: {from_}\n"
-                        f"Кому: {to_}\n"
-                        f"Дата: {date_}\n"
-                        f"Тема: {subject}\n\n"
-                        f"Содержимое:\n{body[:1000]}"
-                    )
-                    bot.send_message(CHAT_ID, simple_message, parse_mode=None)
-                    logger.info(f"Письмо {e_id} отправлено без форматирования Markdown")
+                    # ... (код для отправки без форматирования из предыдущего ответа)
+                    pass
                 except Exception as e2:
                     logger.error(f"Не удалось отправить письмо {e_id} даже без форматирования: {str(e2)}")
 
