@@ -17,7 +17,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY main.py .
 
 # Создаем непривилегированного пользователя
-RUN useradd -m -u 1000 botuser && chown -R botuser:botuser /mail_to_telegram_bot
+RUN useradd -m -u 1000 botuser && chown -R botuser:botuser /app
 USER botuser
 
 # Запускаем бота
