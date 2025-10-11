@@ -8,7 +8,6 @@ import logging
 import json
 import re
 import html
-from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
 # Загружаем переменные окружения
@@ -65,55 +64,28 @@ def save_processed_email(uid):
 
 
 def clean_text(text):
-    """Тщательно очищает текст от лишних пробелов, пустых строк и мусора."""
+    """
+    Убирает только настоящий мусор: множественные пробелы, пустые строки
+    и невидимые символы, но сохраняет весь текст.
+    """
     if not text:
         return ""
 
-    # Удаляем нулевые символы и невидимые символы
-    text = re.sub(r'[\u200b\u200c\u200d\u200e\u200f\ufeff]', '', text)
+    # Удаляем только настоящие невидимые символы (не пробелы и не переносы)
+    text = re.sub(r'[\u200b\u200c\u200d\u200e\u200f\ufeff\x00]', '', text)
 
-    # Заменяем множественные пробелы на один
-    text = re.sub(r'[ \t]+', ' ', text)
+    # Заменяем множественные пробелы на один (но сохраняем переносы строк)
+    text = re.sub(r'[ ]+', ' ', text)
 
-    # Заменяем множественные переносы строк на максимум 2 подряд
-    text = re.sub(r'\n\s*\n', '\n\n', text)
-
-    # Удаляем пробелы в начале и конце строк
-    text = '\n'.join(line.strip() for line in text.split('\n'))
-
-    # Удаляем служебные HTML-комментарии и шаблонные фразы
-    unwanted_patterns = [
-        r'<!DOCTYPE[^>]*>',
-        r'<html[^>]*>.*?</html>',
-        r'<head>.*?</head>',
-        r'<style>.*?</style>',
-        r'<script>.*?</script>',
-        r'<!--.*?-->',
-        r'С уважением[^,\n]*,.*$',
-        r'Отписаться от рассылки',
-        r'Обратная связь',
-        r'Оплата бонусами',
-        r'Все права защищены',
-        r'©.*\d{4}',
-        r'Пересылаемое сообщение',
-        r'Конец пересылаемого сообщения',
-        r'-----+',
-    ]
-
-    for pattern in unwanted_patterns:
-        text = re.sub(pattern, '', text, flags=re.IGNORECASE | re.DOTALL)
-
-    # Удаляем оставшиеся HTML-теги
-    text = re.sub(r'<[^>]+>', '', text)
-
-    # Декодируем HTML-сущности
-    text = html.unescape(text)
-
-    # Удаляем пустые строки в начале и конце
-    text = text.strip()
-
-    # Если после очистки остались множественные пустые строки, заменяем на одну
+    # Заменяем множественные переносы строк (больше 3 подряд) на 2
     text = re.sub(r'\n{3,}', '\n\n', text)
+
+    # Убираем пробелы в начале и конце каждой строки
+    lines = [line.strip() for line in text.split('\n')]
+    text = '\n'.join(lines)
+
+    # Удаляем полностью пустые строки в начале и конце
+    text = text.strip()
 
     return text
 
@@ -136,32 +108,20 @@ def decode_mime_words(encoded_str):
 
 
 def html_to_text(html_content):
-    """Преобразует HTML в чистый текст с использованием BeautifulSoup."""
+    """Преобразует HTML в чистый текст, сохраняя всё содержимое."""
     if not html_content:
         return ""
 
-    try:
-        # Используем BeautifulSoup для парсинга HTML
-        soup = BeautifulSoup(html_content, 'html.parser')
+    # Удаляем HTML-теги, но сохраняем текст между ними
+    text = re.sub(r'<[^>]+>', ' ', html_content)
 
-        # Удаляем ненужные элементы
-        for element in soup(['script', 'style', 'head', 'meta', 'link']):
-            element.decompose()
+    # Декодируем HTML-сущности
+    text = html.unescape(text)
 
-        # Получаем текст
-        text = soup.get_text()
+    # Очищаем текст от мусора, но сохраняем содержимое
+    text = clean_text(text)
 
-        # Очищаем текст
-        text = clean_text(text)
-
-        return text
-
-    except Exception as e:
-        logger.error(f"Ошибка при преобразовании HTML в текст: {e}")
-        # Если BeautifulSoup не сработал, используем простой метод
-        text = re.sub(r'<[^>]+>', ' ', html_content)
-        text = html.unescape(text)
-        return clean_text(text)
+    return text
 
 
 def get_email_body(msg):
@@ -189,7 +149,7 @@ def get_email_body(msg):
                     decoded_payload = payload.decode('utf-8', errors='replace')
 
                 if content_type == "text/plain":
-                    plain_text = clean_text(decoded_payload)
+                    plain_text = decoded_payload
                 elif content_type == "text/html" and not plain_text:
                     html_text = decoded_payload
     else:
@@ -204,13 +164,13 @@ def get_email_body(msg):
                 decoded_payload = payload.decode('utf-8', errors='replace')
 
             if content_type == "text/plain":
-                plain_text = clean_text(decoded_payload)
+                plain_text = decoded_payload
             elif content_type == "text/html":
                 html_text = decoded_payload
 
     # Отдаем предпочтение plain text
     if plain_text:
-        return plain_text
+        return clean_text(plain_text)
     elif html_text:
         # Конвертируем HTML в текст
         return html_to_text(html_text)
@@ -242,23 +202,6 @@ def truncate_text(text, max_length=3000):
         return truncated[:last_space] + "..."
     else:
         return truncated + "..."
-
-
-def extract_forwarded_content(text):
-    """Извлекает основное содержимое из пересылаемых писем."""
-    # Удаляем шапки пересылаемых сообщений
-    patterns = [
-        r'-{2,}\s*С уважением[^-]*-{2,}',
-        r'-{2,}\s*Пересылаемое сообщение\s*-{2,}',
-        r'-{2,}\s*Конец пересылаемого сообщения\s*-{2,}',
-        r'От:.*?\n(?=Кому:|Тема:|Содержимое:)',
-        r'\d{2}\.\d{2}\.\d{4}, \d{2}:\d{2}, [^:]+:',
-    ]
-
-    for pattern in patterns:
-        text = re.sub(pattern, '', text, flags=re.IGNORECASE | re.DOTALL)
-
-    return clean_text(text)
 
 
 def check_new_emails_and_notify():
@@ -312,12 +255,8 @@ def check_new_emails_and_notify():
 
                 body = get_email_body(msg)
 
-                # Обрабатываем пересылаемые сообщения
-                if "fwd" in subject.lower() or "fw:" in subject.lower() or "пересл" in subject.lower():
-                    body = extract_forwarded_content(body)
-
                 # Обрезаем тело письма до разумной длины
-                body_truncated = truncate_text(body, 2500)
+                body_truncated = truncate_text(body, 3000)
 
                 # Экранируем специальные символы Markdown
                 subject_escaped = escape_markdown(subject)
@@ -333,8 +272,13 @@ def check_new_emails_and_notify():
                     f"*Кому:* {to_escaped}\n"
                     f"*Дата:* {date_escaped}\n"
                     f"*Тема:* {subject_escaped}\n\n"
-                    f"*Содержимое:*\n{body_escaped}"
                 )
+
+                # Добавляем содержимое только если оно есть
+                if body_escaped.strip():
+                    telegram_message += f"*Содержимое:*\n{body_escaped}"
+                else:
+                    telegram_message += "*Содержимое:* (пустое письмо или только вложения)"
 
                 # Отправляем сообщение в Telegram
                 bot.send_message(CHAT_ID, telegram_message, parse_mode="Markdown")
@@ -353,8 +297,12 @@ def check_new_emails_and_notify():
                         f"Кому: {to_}\n"
                         f"Дата: {date_}\n"
                         f"Тема: {subject}\n\n"
-                        f"Содержимое:\n{body_truncated}"
                     )
+                    if body.strip():
+                        simple_message += f"Содержимое:\n{body_truncated}"
+                    else:
+                        simple_message += "Содержимое: (пустое письмо или только вложения)"
+
                     bot.send_message(CHAT_ID, simple_message, parse_mode=None)
                     logger.info(f"Письмо {e_id} отправлено без форматирования Markdown")
                     save_processed_email(message_id)
