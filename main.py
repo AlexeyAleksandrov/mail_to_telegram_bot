@@ -24,7 +24,7 @@ CHECK_INTERVAL = int(os.getenv('CHECK_INTERVAL', '300'))
 
 # ====== НАСТРОЙКА ЛОГГИРОВАНИЯ ======
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.Info,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[logging.StreamHandler()]
 )
@@ -65,26 +65,28 @@ def save_processed_email(uid):
 
 def clean_text(text):
     """
-    Убирает только настоящий мусор: множественные пробелы, пустые строки
-    и невидимые символы, но сохраняет весь текст.
+    Убирает невидимые символы и огромные пробелы, но сохраняет весь текст.
     """
     if not text:
         return ""
 
-    # Удаляем только настоящие невидимые символы (не пробелы и не переносы)
-    text = re.sub(r'[\u200b\u200c\u200d\u200e\u200f\ufeff\x00]', '', text)
+    # Удаляем невидимые символы (Braille, нулевые пробелы и т.д.)
+    text = re.sub(r'[\u2800\u200b\u200c\u200d\u200e\u200f\ufeff\x00]', '', text)
 
-    # Заменяем множественные пробелы на один (но сохраняем переносы строк)
-    text = re.sub(r'[ ]+', ' ', text)
+    # Заменяем неразрывные пробелы и табы на обычные пробелы
+    text = re.sub(r'[\t\u00A0]', ' ', text)
 
-    # Заменяем множественные переносы строк (больше 3 подряд) на 2
-    text = re.sub(r'\n{3,}', '\n\n', text)
+    # Убираем множественные пробелы (но оставляем одиночные)
+    text = re.sub(r' {2,}', ' ', text)
 
-    # Убираем пробелы в начале и конце каждой строки
+    # Убираем множественные пустые строки (оставляем максимум 2 подряд)
+    text = re.sub(r'\n\s*\n', '\n\n', text)
+
+    # Убираем пробелы в начале и конце строк
     lines = [line.strip() for line in text.split('\n')]
     text = '\n'.join(lines)
 
-    # Удаляем полностью пустые строки в начале и конце
+    # Убираем пустые строки в начале и конце
     text = text.strip()
 
     return text
@@ -179,10 +181,11 @@ def get_email_body(msg):
 
 
 def escape_markdown(text):
-    """Экранирует специальные символы Markdown для Telegram."""
+    """Экранирует специальные символы Markdown для Telegram, но не дефисы."""
     if not text:
         return ""
-    escape_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+    # Экранируем только действительно проблемные символы, но не дефисы
+    escape_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '=', '|', '{', '}']
     for char in escape_chars:
         text = text.replace(char, '\\' + char)
     return text
@@ -258,7 +261,7 @@ def check_new_emails_and_notify():
                 # Обрезаем тело письма до разумной длины
                 body_truncated = truncate_text(body, 3000)
 
-                # Экранируем специальные символы Markdown
+                # Экранируем специальные символы Markdown (кроме дефисов)
                 subject_escaped = escape_markdown(subject)
                 from_escaped = escape_markdown(from_)
                 to_escaped = escape_markdown(to_)
