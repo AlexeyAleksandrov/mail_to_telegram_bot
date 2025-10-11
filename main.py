@@ -7,7 +7,8 @@ import os
 import logging
 import json
 import re
-from html import unescape
+import html
+from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
 # Загружаем переменные окружения
@@ -64,10 +65,57 @@ def save_processed_email(uid):
 
 
 def clean_text(text):
-    """Удаляет лишние пробелы и переносы строк из текста."""
-    if text:
-        return " ".join(text.split())
-    return ""
+    """Тщательно очищает текст от лишних пробелов, пустых строк и мусора."""
+    if not text:
+        return ""
+
+    # Удаляем нулевые символы и невидимые символы
+    text = re.sub(r'[\u200b\u200c\u200d\u200e\u200f\ufeff]', '', text)
+
+    # Заменяем множественные пробелы на один
+    text = re.sub(r'[ \t]+', ' ', text)
+
+    # Заменяем множественные переносы строк на максимум 2 подряд
+    text = re.sub(r'\n\s*\n', '\n\n', text)
+
+    # Удаляем пробелы в начале и конце строк
+    text = '\n'.join(line.strip() for line in text.split('\n'))
+
+    # Удаляем служебные HTML-комментарии и шаблонные фразы
+    unwanted_patterns = [
+        r'<!DOCTYPE[^>]*>',
+        r'<html[^>]*>.*?</html>',
+        r'<head>.*?</head>',
+        r'<style>.*?</style>',
+        r'<script>.*?</script>',
+        r'<!--.*?-->',
+        r'С уважением[^,\n]*,.*$',
+        r'Отписаться от рассылки',
+        r'Обратная связь',
+        r'Оплата бонусами',
+        r'Все права защищены',
+        r'©.*\d{4}',
+        r'Пересылаемое сообщение',
+        r'Конец пересылаемого сообщения',
+        r'-----+',
+    ]
+
+    for pattern in unwanted_patterns:
+        text = re.sub(pattern, '', text, flags=re.IGNORECASE | re.DOTALL)
+
+    # Удаляем оставшиеся HTML-теги
+    text = re.sub(r'<[^>]+>', '', text)
+
+    # Декодируем HTML-сущности
+    text = html.unescape(text)
+
+    # Удаляем пустые строки в начале и конце
+    text = text.strip()
+
+    # Если после очистки остались множественные пустые строки, заменяем на одну
+    text = re.sub(r'\n{3,}', '\n\n', text)
+
+    return text
 
 
 def decode_mime_words(encoded_str):
@@ -88,23 +136,32 @@ def decode_mime_words(encoded_str):
 
 
 def html_to_text(html_content):
-    """Преобразует HTML в чистый текст."""
+    """Преобразует HTML в чистый текст с использованием BeautifulSoup."""
     if not html_content:
         return ""
 
-    # Удаляем HTML-теги
-    text = re.sub(r'<[^>]+>', ' ', html_content)
+    try:
+        # Используем BeautifulSoup для парсинга HTML
+        soup = BeautifulSoup(html_content, 'html.parser')
 
-    # Заменяем HTML-сущности на обычные символы
-    text = unescape(text)
+        # Удаляем ненужные элементы
+        for element in soup(['script', 'style', 'head', 'meta', 'link']):
+            element.decompose()
 
-    # Заменяем множественные пробелы на один
-    text = re.sub(r'\s+', ' ', text)
+        # Получаем текст
+        text = soup.get_text()
 
-    # Удаляем пробелы в начале и конце
-    text = text.strip()
+        # Очищаем текст
+        text = clean_text(text)
 
-    return text
+        return text
+
+    except Exception as e:
+        logger.error(f"Ошибка при преобразовании HTML в текст: {e}")
+        # Если BeautifulSoup не сработал, используем простой метод
+        text = re.sub(r'<[^>]+>', ' ', html_content)
+        text = html.unescape(text)
+        return clean_text(text)
 
 
 def get_email_body(msg):
@@ -132,7 +189,7 @@ def get_email_body(msg):
                     decoded_payload = payload.decode('utf-8', errors='replace')
 
                 if content_type == "text/plain":
-                    plain_text = decoded_payload
+                    plain_text = clean_text(decoded_payload)
                 elif content_type == "text/html" and not plain_text:
                     html_text = decoded_payload
     else:
@@ -147,13 +204,13 @@ def get_email_body(msg):
                 decoded_payload = payload.decode('utf-8', errors='replace')
 
             if content_type == "text/plain":
-                plain_text = decoded_payload
+                plain_text = clean_text(decoded_payload)
             elif content_type == "text/html":
                 html_text = decoded_payload
 
     # Отдаем предпочтение plain text
     if plain_text:
-        return clean_text(plain_text)
+        return plain_text
     elif html_text:
         # Конвертируем HTML в текст
         return html_to_text(html_text)
@@ -187,19 +244,34 @@ def truncate_text(text, max_length=3000):
         return truncated + "..."
 
 
+def extract_forwarded_content(text):
+    """Извлекает основное содержимое из пересылаемых писем."""
+    # Удаляем шапки пересылаемых сообщений
+    patterns = [
+        r'-{2,}\s*С уважением[^-]*-{2,}',
+        r'-{2,}\s*Пересылаемое сообщение\s*-{2,}',
+        r'-{2,}\s*Конец пересылаемого сообщения\s*-{2,}',
+        r'От:.*?\n(?=Кому:|Тема:|Содержимое:)',
+        r'\d{2}\.\d{2}\.\d{4}, \d{2}:\d{2}, [^:]+:',
+    ]
+
+    for pattern in patterns:
+        text = re.sub(pattern, '', text, flags=re.IGNORECASE | re.DOTALL)
+
+    return clean_text(text)
+
+
 def check_new_emails_and_notify():
     """Основная функция: проверяет почту и отправляет уведомления."""
     try:
         # Подключаемся к серверу
         mail = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT)
         mail.login(EMAIL_ACCOUNT, EMAIL_PASSWORD)
-        mail.select("INBOX")  # Выбираем папку "Входящие"
+        mail.select("INBOX")
 
-        # Загружаем уже обработанные письма
         processed_emails = load_processed_emails()
         logger.info(f"Загружено {len(processed_emails)} обработанных писем")
 
-        # Ищем непрочитанные письма
         status, messages = mail.search(None, "UNSEEN")
         if status != "OK":
             logger.error("Ошибка при поиске писем")
@@ -210,10 +282,8 @@ def check_new_emails_and_notify():
 
         logger.info(f"Найдено непрочитанных писем: {len(email_ids)}")
 
-        # Обрабатываем каждое новое письмо
         for e_id in email_ids:
             try:
-                # Используем BODY.PEEK вместо FETCH чтобы не помечать письма как прочитанные
                 status, msg_data = mail.fetch(e_id, "(BODY.PEEK[])")
                 if status != "OK":
                     logger.error(f"Ошибка при получении письма {e_id}")
@@ -221,16 +291,13 @@ def check_new_emails_and_notify():
 
                 msg = email.message_from_bytes(msg_data[0][1])
 
-                # Создаем уникальный идентификатор письма
                 message_id = msg.get('Message-ID', '')
                 date = msg.get('Date', '')
                 from_ = msg.get('From', '')
 
-                # Если нет Message-ID, создаем свой на основе содержимого
                 if not message_id:
                     message_id = f"{e_id.decode()}_{date}_{from_}"
 
-                # Проверяем, не обрабатывали ли мы уже это письмо
                 if message_id in processed_emails:
                     logger.info(f"Письмо {message_id} уже было обработано, пропускаем")
                     continue
@@ -240,14 +307,17 @@ def check_new_emails_and_notify():
                 to_ = decode_mime_words(msg["To"])
                 date_ = msg["Date"]
 
-                # Если темы нет, устанавливаем значение по умолчанию
                 if not subject:
                     subject = "(Без темы)"
 
                 body = get_email_body(msg)
 
+                # Обрабатываем пересылаемые сообщения
+                if "fwd" in subject.lower() or "fw:" in subject.lower() or "пересл" in subject.lower():
+                    body = extract_forwarded_content(body)
+
                 # Обрезаем тело письма до разумной длины
-                body_truncated = truncate_text(body, 3000)
+                body_truncated = truncate_text(body, 2500)
 
                 # Экранируем специальные символы Markdown
                 subject_escaped = escape_markdown(subject)
@@ -276,7 +346,6 @@ def check_new_emails_and_notify():
 
             except Exception as e:
                 logger.error(f"Ошибка при обработке письма {e_id}: {str(e)}")
-                # Попробуем отправить без форматирования Markdown в случае ошибки
                 try:
                     simple_message = (
                         f"📨 Новое письмо\n\n"
@@ -288,8 +357,6 @@ def check_new_emails_and_notify():
                     )
                     bot.send_message(CHAT_ID, simple_message, parse_mode=None)
                     logger.info(f"Письмо {e_id} отправлено без форматирования Markdown")
-
-                    # Сохраняем информацию об обработанном письме даже при ошибке форматирования
                     save_processed_email(message_id)
                 except Exception as e2:
                     logger.error(f"Не удалось отправить письмо {e_id} даже без форматирования: {str(e2)}")
@@ -303,7 +370,6 @@ def check_new_emails_and_notify():
 
 # ====== ЗАПУСК ======
 if __name__ == "__main__":
-    # Проверяем обязательные переменные окружения
     required_vars = ['EMAIL_ACCOUNT', 'EMAIL_PASSWORD', 'BOT_TOKEN', 'CHAT_ID']
     missing_vars = [var for var in required_vars if not os.getenv(var)]
 
