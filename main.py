@@ -24,7 +24,7 @@ CHECK_INTERVAL = int(os.getenv('CHECK_INTERVAL', '300'))
 
 # ====== НАСТРОЙКА ЛОГГИРОВАНИЯ ======
 logging.basicConfig(
-    level=logging.Info,
+    level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[logging.StreamHandler()]
 )
