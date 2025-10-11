@@ -6,6 +6,8 @@ import telebot
 import os
 import logging
 import json
+import re
+from html import unescape
 from dotenv import load_dotenv
 
 # Загружаем переменные окружения
@@ -85,34 +87,78 @@ def decode_mime_words(encoded_str):
     return decoded_str
 
 
+def html_to_text(html_content):
+    """Преобразует HTML в чистый текст."""
+    if not html_content:
+        return ""
+
+    # Удаляем HTML-теги
+    text = re.sub(r'<[^>]+>', ' ', html_content)
+
+    # Заменяем HTML-сущности на обычные символы
+    text = unescape(text)
+
+    # Заменяем множественные пробелы на один
+    text = re.sub(r'\s+', ' ', text)
+
+    # Удаляем пробелы в начале и конце
+    text = text.strip()
+
+    return text
+
+
 def get_email_body(msg):
-    """Извлекает текстовую часть тела письма."""
-    body = ""
+    """Извлекает текстовую часть тела письма, отдавая предпочтение plain text над HTML."""
+    plain_text = ""
+    html_text = ""
+
     if msg.is_multipart():
+        # Обрабатываем multipart сообщение
         for part in msg.walk():
             content_type = part.get_content_type()
             content_disposition = str(part.get("Content-Disposition"))
+
             # Пропускаем вложения
             if "attachment" in content_disposition:
                 continue
-            if content_type == "text/plain":
-                payload = part.get_payload(decode=True)
-                if payload:
-                    charset = part.get_content_charset() or 'utf-8'
-                    try:
-                        body += payload.decode(charset, errors='replace')
-                    except:
-                        body += payload.decode('utf-8', errors='replace')
+
+            # Получаем содержимое части
+            payload = part.get_payload(decode=True)
+            if payload:
+                charset = part.get_content_charset() or 'utf-8'
+                try:
+                    decoded_payload = payload.decode(charset, errors='replace')
+                except:
+                    decoded_payload = payload.decode('utf-8', errors='replace')
+
+                if content_type == "text/plain":
+                    plain_text = decoded_payload
+                elif content_type == "text/html" and not plain_text:
+                    html_text = decoded_payload
     else:
-        # Письмо не multipart, просто берем payload
+        # Обрабатываем простое сообщение
+        content_type = msg.get_content_type()
         payload = msg.get_payload(decode=True)
         if payload:
             charset = msg.get_content_charset() or 'utf-8'
             try:
-                body = payload.decode(charset, errors='replace')
+                decoded_payload = payload.decode(charset, errors='replace')
             except:
-                body = payload.decode('utf-8', errors='replace')
-    return clean_text(body)
+                decoded_payload = payload.decode('utf-8', errors='replace')
+
+            if content_type == "text/plain":
+                plain_text = decoded_payload
+            elif content_type == "text/html":
+                html_text = decoded_payload
+
+    # Отдаем предпочтение plain text
+    if plain_text:
+        return clean_text(plain_text)
+    elif html_text:
+        # Конвертируем HTML в текст
+        return html_to_text(html_text)
+    else:
+        return ""
 
 
 def escape_markdown(text):
@@ -123,6 +169,22 @@ def escape_markdown(text):
     for char in escape_chars:
         text = text.replace(char, '\\' + char)
     return text
+
+
+def truncate_text(text, max_length=3000):
+    """Обрезает текст до максимальной длины, стараясь не обрезать слова."""
+    if len(text) <= max_length:
+        return text
+
+    # Обрезаем до максимальной длины
+    truncated = text[:max_length]
+
+    # Пытаемся обрезать до последнего пробела
+    last_space = truncated.rfind(' ')
+    if last_space > max_length * 0.8:  # Если есть подходящее место для обрезки
+        return truncated[:last_space] + "..."
+    else:
+        return truncated + "..."
 
 
 def check_new_emails_and_notify():
@@ -159,7 +221,7 @@ def check_new_emails_and_notify():
 
                 msg = email.message_from_bytes(msg_data[0][1])
 
-                # Создаем уникальный идентификатор письма (UID + дата + отправитель)
+                # Создаем уникальный идентификатор письма
                 message_id = msg.get('Message-ID', '')
                 date = msg.get('Date', '')
                 from_ = msg.get('From', '')
@@ -184,12 +246,15 @@ def check_new_emails_and_notify():
 
                 body = get_email_body(msg)
 
+                # Обрезаем тело письма до разумной длины
+                body_truncated = truncate_text(body, 3000)
+
                 # Экранируем специальные символы Markdown
                 subject_escaped = escape_markdown(subject)
                 from_escaped = escape_markdown(from_)
                 to_escaped = escape_markdown(to_)
                 date_escaped = escape_markdown(date_)
-                body_escaped = escape_markdown(body)
+                body_escaped = escape_markdown(body_truncated)
 
                 # Формируем сообщение для Telegram
                 telegram_message = (
@@ -198,14 +263,14 @@ def check_new_emails_and_notify():
                     f"*Кому:* {to_escaped}\n"
                     f"*Дата:* {date_escaped}\n"
                     f"*Тема:* {subject_escaped}\n\n"
-                    f"*Содержимое:*\n{body_escaped[:1000]}"  # Ограничиваем длину сообщения
+                    f"*Содержимое:*\n{body_escaped}"
                 )
 
                 # Отправляем сообщение в Telegram
                 bot.send_message(CHAT_ID, telegram_message, parse_mode="Markdown")
                 logger.info(f"Уведомление отправлено для письма ID: {e_id.decode()} от {from_}")
 
-                # Сохраняем информацию об обработанном письме
+                # Сохраняем информацию о обработанном письме
                 save_processed_email(message_id)
                 logger.info(f"Письмо {message_id} добавлено в обработанные")
 
@@ -213,8 +278,19 @@ def check_new_emails_and_notify():
                 logger.error(f"Ошибка при обработке письма {e_id}: {str(e)}")
                 # Попробуем отправить без форматирования Markdown в случае ошибки
                 try:
-                    # ... (код для отправки без форматирования из предыдущего ответа)
-                    pass
+                    simple_message = (
+                        f"📨 Новое письмо\n\n"
+                        f"От: {from_}\n"
+                        f"Кому: {to_}\n"
+                        f"Дата: {date_}\n"
+                        f"Тема: {subject}\n\n"
+                        f"Содержимое:\n{body_truncated}"
+                    )
+                    bot.send_message(CHAT_ID, simple_message, parse_mode=None)
+                    logger.info(f"Письмо {e_id} отправлено без форматирования Markdown")
+
+                    # Сохраняем информацию об обработанном письме даже при ошибке форматирования
+                    save_processed_email(message_id)
                 except Exception as e2:
                     logger.error(f"Не удалось отправить письмо {e_id} даже без форматирования: {str(e2)}")
 
